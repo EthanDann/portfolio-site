@@ -6,8 +6,34 @@ type ContactPayload = {
   message: string;
 };
 
-/** All mail config must come from environment variables; never hardcode secrets. */
-function getMailConfig() {
+/** Use Resend API if RESEND_API_KEY is set (works on Render; no SMTP). Otherwise use SMTP. */
+async function sendViaResend(payload: ContactPayload, contactTo: string): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) throw new Error('RESEND_API_KEY is not set');
+
+  const from = process.env.RESEND_FROM || 'Portfolio Contact <onboarding@resend.dev>';
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to: [contactTo],
+      subject: `New portfolio message from ${payload.name}`,
+      text: payload.message,
+      reply_to: payload.email,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { message?: string };
+    throw new Error(err?.message || `Resend API error: ${res.status}`);
+  }
+}
+
+function getSmtpConfig() {
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : undefined;
   const smtpUser = process.env.SMTP_USER;
@@ -24,7 +50,17 @@ function getMailConfig() {
 }
 
 export async function sendContactEmail(payload: ContactPayload): Promise<void> {
-  const { smtpHost, smtpPort, smtpUser, smtpPass, contactTo } = getMailConfig();
+  const contactTo = process.env.CONTACT_TO;
+  if (!contactTo) {
+    throw new Error('CONTACT_TO must be set in the environment.');
+  }
+
+  if (process.env.RESEND_API_KEY) {
+    await sendViaResend(payload, contactTo);
+    return;
+  }
+
+  const { smtpHost, smtpPort, smtpUser, smtpPass } = getSmtpConfig();
 
   const transporter = nodemailer.createTransport({
     host: smtpHost,
@@ -34,16 +70,16 @@ export async function sendContactEmail(payload: ContactPayload): Promise<void> {
       user: smtpUser,
       pass: smtpPass,
     },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
   });
-
-  const { name, email, message } = payload;
 
   await transporter.sendMail({
     from: `"Portfolio Contact" <${smtpUser}>`,
     to: contactTo,
-    subject: `New portfolio message from ${name}`,
-    replyTo: email,
-    text: message,
+    subject: `New portfolio message from ${payload.name}`,
+    replyTo: payload.email,
+    text: payload.message,
   });
 }
 
